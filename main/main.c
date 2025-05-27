@@ -14,6 +14,7 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_ssd1306.h"
+#include "font8x8_basic.h"
 
 static const char *TAG = "SHUTTER_CHECKER";
 
@@ -121,12 +122,7 @@ void init_gpio(void) {
 
 // Initialize I2C and SSD1306 display
 void init_display(void) {
-    // Display initialization commented out for now
-    ESP_LOGI(TAG, "Display initialization skipped");
-    return;
-    
-    /*
-    ESP_LOGI(TAG, "Initializing SSD1306 display...");
+    ESP_LOGI(TAG, "Initializing GME12864/SSD1306 display...");
     
     // Initialize I2C bus
     i2c_config_t i2c_conf = {
@@ -148,6 +144,8 @@ void init_display(void) {
         .dc_bit_offset = 6,
         .lcd_cmd_bits = LCD_CMD_BITS,
         .lcd_param_bits = LCD_PARAM_BITS,
+        .flags.dc_low_on_data = 0,
+        .flags.disable_control_phase = 0,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)I2C_PORT_NUM, &io_config, &io_handle));
 
@@ -155,6 +153,7 @@ void init_display(void) {
     esp_lcd_panel_dev_config_t panel_config = {
         .bits_per_pixel = 1,
         .reset_gpio_num = -1,
+        .color_space = ESP_LCD_COLOR_SPACE_MONOCHROME,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_ssd1306(io_handle, &panel_config, &panel_handle));
     
@@ -163,40 +162,88 @@ void init_display(void) {
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
     
+    // Rotate display 180 degrees
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, true));
+    
     // Allocate framebuffer
     display_buffer = heap_caps_malloc(LCD_H_RES * LCD_V_RES / 8, MALLOC_CAP_DMA);
+    if (display_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate display buffer");
+        return;
+    }
     memset(display_buffer, 0x00, LCD_H_RES * LCD_V_RES / 8);
     
-    ESP_LOGI(TAG, "Display initialized");
-    */
+    ESP_LOGI(TAG, "Display initialized successfully");
+}
+
+// Draw a single character at specified position
+void display_draw_char(char c, int x, int y, bool color) {
+    if (c < 0 || c > 127) return;
+    
+    for (int i = 0; i < 8; i++) {
+        uint8_t line = font8x8_basic[(int)c][i];
+        for (int j = 0; j < 8; j++) {
+            if (line & 0x1) {
+                display_set_pixel(x + j, y + i, color);
+            }
+            line >>= 1;
+        }
+    }
 }
 
 // Draw text on display at specified position
 void display_draw_text(const char *text, int x, int y, bool large) {
-    // For now, just log the text. In a real implementation, you'd use a graphics library
-    ESP_LOGI(TAG, "Display text at (%d,%d): %s", x, y, text);
+    int cursor_x = x;
+    int cursor_y = y;
+    int char_width = large ? 16 : 8;
+    int char_height = large ? 16 : 8;
     
-    // Draw a simple pattern to show something is happening
-    // This creates a line of pixels for each character
-    int len = strlen(text);
-    for (int i = 0; i < len && (x + i * 6) < LCD_H_RES; i++) {
-        for (int j = 0; j < (large ? 8 : 6); j++) {
-            if (y + j < LCD_V_RES) {
-                display_set_pixel(x + i * 6, y + j, true);
-                display_set_pixel(x + i * 6 + 4, y + j, true);
+    while (*text) {
+        if (*text == '\n') {
+            cursor_x = x;
+            cursor_y += char_height;
+        } else {
+            if (large) {
+                // Draw character scaled 2x
+                for (int i = 0; i < 8; i++) {
+                    uint8_t line = font8x8_basic[(int)*text][i];
+                    for (int j = 0; j < 8; j++) {
+                        if (line & (1 << j)) {
+                            // Draw 2x2 block for each pixel
+                            display_set_pixel(cursor_x + j*2, cursor_y + i*2, true);
+                            display_set_pixel(cursor_x + j*2 + 1, cursor_y + i*2, true);
+                            display_set_pixel(cursor_x + j*2, cursor_y + i*2 + 1, true);
+                            display_set_pixel(cursor_x + j*2 + 1, cursor_y + i*2 + 1, true);
+                        }
+                    }
+                }
+            } else {
+                display_draw_char(*text, cursor_x, cursor_y, true);
+            }
+            cursor_x += char_width;
+            
+            // Wrap to next line if needed
+            if (cursor_x + char_width > LCD_H_RES) {
+                cursor_x = x;
+                cursor_y += char_height;
             }
         }
+        text++;
     }
 }
 
 // Update display with current content
 void display_update(void) {
-    esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, LCD_H_RES, LCD_V_RES, display_buffer);
+    if (panel_handle != NULL && display_buffer != NULL) {
+        esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, LCD_H_RES, LCD_V_RES, display_buffer);
+    }
 }
 
 // Clear display buffer
 void display_clear(void) {
-    memset(display_buffer, 0x00, LCD_H_RES * LCD_V_RES / 8);
+    if (display_buffer != NULL) {
+        memset(display_buffer, 0x00, LCD_H_RES * LCD_V_RES / 8);
+    }
 }
 
 // Task to monitor light sensor and measure shutter timing
@@ -342,75 +389,82 @@ void display_fill_rect(int x, int y, int w, int h, bool color) {
     }
 }
 
-// Task to display results - commented out for now
-/*
+// Task to display results
 void display_task(void *pvParameters) {
     measurement_t measurement;
     char line1[64];
     char last_speed[32] = "None";
     
+    // Wait a bit for display to initialize
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
     // Show welcome screen with countdown
     for (int i = 3; i > 0; i--) {
         display_clear();
-        display_draw_box(0, 0, LCD_H_RES, LCD_V_RES);
-        display_draw_text("SHUTTER CHECKER", 10, 10, true);
-        snprintf(line1, sizeof(line1), "Starting in %d...", i);
-        display_draw_text(line1, 20, 30, false);
-        
-        // Draw countdown progress bar
-        int bar_width = (3 - i + 1) * (LCD_H_RES - 20) / 3;
-        display_fill_rect(10, 50, bar_width, 10, true);
-        display_draw_box(10, 50, LCD_H_RES - 20, 10);
-        
+        display_draw_box(0, 0, LCD_H_RES-1, LCD_V_RES-1);
+        display_draw_text("SHUTTER", 20, 8, true);
+        display_draw_text("CHECKER", 20, 24, true);
+        snprintf(line1, sizeof(line1), "Start in %d", i);
+        display_draw_text(line1, 28, 48, false);
         display_update();
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
     
     // Show ready screen
     display_clear();
-    display_draw_box(0, 0, LCD_H_RES, LCD_V_RES);
-    display_draw_text("Last Measurement:", 5, 10, false);
-    display_draw_text(last_speed, 30, 25, true);
-    display_draw_text("Ready for next", 15, 40, false);
-    display_draw_text("measurement", 20, 50, false);
+    display_draw_box(0, 0, LCD_H_RES-1, LCD_V_RES-1);
+    display_draw_text("Last:", 8, 8, false);
+    display_draw_text(last_speed, 16, 20, true);
+    display_draw_text("Ready...", 32, 48, false);
     display_update();
     
     while (1) {
         // Check for new measurements with timeout
         if (xQueueReceive(measurement_queue, &measurement, pdMS_TO_TICKS(100))) {
-            ESP_LOGI(TAG, "=================================");
-            ESP_LOGI(TAG, "MEASUREMENT COMPLETE!");
-            ESP_LOGI(TAG, "Duration: %lld microseconds", measurement.duration_us);
-            ESP_LOGI(TAG, "Duration: %.3f milliseconds", measurement.duration_ms);
-            ESP_LOGI(TAG, "Shutter Speed: %s", measurement.shutter_speed);
-            ESP_LOGI(TAG, "=================================");
-            
             // Store the measurement
             strncpy(last_speed, measurement.shutter_speed, sizeof(last_speed) - 1);
+            last_speed[sizeof(last_speed) - 1] = '\0';
             
             // Show measurement for 3 seconds
             display_clear();
-            display_draw_box(0, 0, LCD_H_RES, LCD_V_RES);
-            display_draw_text("MEASURED!", 30, 10, true);
-            display_draw_text(measurement.shutter_speed, 25, 30, true);
+            display_draw_box(0, 0, LCD_H_RES-1, LCD_V_RES-1);
+            display_draw_text("MEASURED!", 24, 8, false);
+            
+            // Center the shutter speed
+            int text_len = strlen(measurement.shutter_speed);
+            int x_pos = (LCD_H_RES - (text_len * 16)) / 2;
+            if (x_pos < 0) x_pos = 0;
+            display_draw_text(measurement.shutter_speed, x_pos, 24, true);
+            
             snprintf(line1, sizeof(line1), "%.1f ms", measurement.duration_ms);
-            display_draw_text(line1, 30, 45, false);
+            text_len = strlen(line1);
+            x_pos = (LCD_H_RES - (text_len * 8)) / 2;
+            display_draw_text(line1, x_pos, 48, false);
             display_update();
             
             vTaskDelay(pdMS_TO_TICKS(3000));
             
             // Return to ready screen
             display_clear();
-            display_draw_box(0, 0, LCD_H_RES, LCD_V_RES);
-            display_draw_text("Last Measurement:", 5, 10, false);
-            display_draw_text(last_speed, 30, 25, true);
-            display_draw_text("Ready for next", 15, 40, false);
-            display_draw_text("measurement", 20, 50, false);
+            display_draw_box(0, 0, LCD_H_RES-1, LCD_V_RES-1);
+            display_draw_text("Last:", 8, 8, false);
+            display_draw_text(last_speed, 16, 20, true);
+            display_draw_text("Ready...", 32, 48, false);
+            display_update();
+        }
+        
+        // Update display periodically even without new measurements
+        if (current_state == STATE_TIMING) {
+            int64_t elapsed_us = esp_timer_get_time() - shutter_open_time;
+            display_clear();
+            display_draw_box(0, 0, LCD_H_RES-1, LCD_V_RES-1);
+            display_draw_text("TIMING...", 28, 16, false);
+            snprintf(line1, sizeof(line1), "%.1f ms", elapsed_us / 1000.0);
+            display_draw_text(line1, 32, 32, false);
             display_update();
         }
     }
 }
-*/
 
 void app_main(void)
 {
@@ -428,8 +482,8 @@ void app_main(void)
     xTaskCreatePinnedToCore(shutter_monitor_task, "shutter_monitor", 8192, NULL, 
                             configMAX_PRIORITIES - 1, NULL, 1);  // Pin to core 1, max priority
     
-    // Create display task - commented out for now
-    // xTaskCreate(display_task, "display", 4096, NULL, 4, NULL);
+    // Create display task
+    xTaskCreate(display_task, "display", 4096, NULL, 4, NULL);
     
     ESP_LOGI(TAG, "System initialized. Place camera in front of light source.");
 }

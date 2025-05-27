@@ -1,0 +1,27 @@
+# Default configuration for Shutter Checker
+
+# Enable I2C driver
+CONFIG_I2C_ENABLE_DEBUG_LOG=n
+
+# Enable SSD1306 display support
+CONFIG_LV_USE_SSD1306=y
+
+# ADC Configuration
+CONFIG_ADC_DISABLE_DAC=y
+
+# FreeRTOS Configuration
+CONFIG_FREERTOS_HZ=1000
+
+# ESP32 specific
+CONFIG_ESP32_DEFAULT_CPU_FREQ_240=y
+
+# Log output
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
+
+# Heap memory debugging
+CONFIG_HEAP_POISONING_LIGHT=y
+CONFIG_HEAP_TRACING_OFF=y
+
+# Main task stack size
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
