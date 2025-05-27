@@ -38,9 +38,29 @@
    - Set up GPIO interrupt for edge detection
    - Consider using hardware timer for accurate measurements
 
-6. **Hardware Pins** (to be configured):
-   - ADC pin for photoresistor
-   - GPIO pin for LED control
-   - I2C/SPI pins for LCD display
+6. **Hardware Pins for ESP32-S3 Feather**:
+   - **Photoresistor ADC**: GPIO5 (A1 pin) - ADC1 Channel 4
+   - **Light Source LED**: GPIO12 (D12 pin)
+   - **Status LED**: GPIO13 (Built-in LED)
+   - **Future LCD Display**:
+     - I2C: SDA=GPIO3, SCL=GPIO4 (STEMMA QT connector)
+     - Or SPI: MOSI=GPIO35, MISO=GPIO37, SCK=GPIO36
+
+7. **Wiring Guide**:
+   ```
+   Photoresistor Circuit:
+   3.3V --- [10kΩ resistor] --- GPIO5 --- [Photoresistor] --- GND
+                                 |
+                            ADC input
+   
+   Light Source LED:
+   GPIO12 --- [220Ω resistor] --- LED --- GND
+   ```
+
+8. **ADC Configuration**:
+   - Using ADC1 (ADC2 conflicts with WiFi on ESP32)
+   - 11dB attenuation for 0-3.3V range
+   - 12-bit resolution (0-4095 values)
+   - Light threshold: >2500 = light detected, <1000 = dark
 
 Remember: This is ESP-IDF, not Arduino!
