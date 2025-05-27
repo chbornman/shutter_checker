@@ -68,7 +68,7 @@ shutter_checker/
 
 ```
 Photoresistor Voltage Divider:
-- 3.3V → 10kΩ resistor → GPIO5 (A1) → Photoresistor → GND
+- 3.3V → 10kΩ resistor → GPIO8 (A5) → Photoresistor → GND
 
 Light Source LED:
 - GPIO12 (D12) → 220Ω resistor → LED anode → LED cathode → GND

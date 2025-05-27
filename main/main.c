@@ -20,8 +20,9 @@ static const char *TAG = "SHUTTER_CHECKER";
 // Pin definitions for ESP32-S3 Feather
 #define LED_PIN         13      // Built-in LED on Feather
 #define LIGHT_SOURCE_PIN 12     // External LED to shine through shutter
-#define ADC_CHANNEL     ADC_CHANNEL_4  // GPIO5 on ESP32-S3 Feather (A1)
-#define ADC_ATTEN       ADC_ATTEN_DB_11
+#define ADC_CHANNEL     ADC_CHANNEL_7  // GPIO8 on ESP32-S3 Feather (A5)
+#define ADC_ATTEN       ADC_ATTEN_DB_12  // 0-3.3V range
+#define ADC_GPIO_PIN    8       // For verification
 
 // I2C Display pins
 #define I2C_SDA_PIN     3
@@ -36,10 +37,10 @@ static const char *TAG = "SHUTTER_CHECKER";
 #define LCD_CMD_BITS    8
 #define LCD_PARAM_BITS  8
 
-// Threshold values
-#define LIGHT_THRESHOLD_HIGH 2500  // ADC value when light detected
-#define LIGHT_THRESHOLD_LOW  1000  // ADC value when dark
-#define DEBOUNCE_US     1000       // 1ms debounce time
+// Threshold values - adjusted for photoresistor (inverted logic)
+#define LIGHT_THRESHOLD_HIGH 2400   // ADC value when dark (photoresistor high resistance)
+#define LIGHT_THRESHOLD_LOW  1800   // ADC value when light detected (photoresistor low resistance)
+#define DEBOUNCE_US     50         // 50µs debounce time (allows up to 1/20000s detection)
 
 // Shutter timing states
 typedef enum {
@@ -59,6 +60,9 @@ static esp_lcd_panel_handle_t panel_handle = NULL;
 
 // Display buffer for drawing
 static uint8_t *display_buffer = NULL;
+
+// Forward declarations
+void display_set_pixel(int x, int y, bool color);
 
 typedef struct {
     int64_t duration_us;
@@ -117,6 +121,11 @@ void init_gpio(void) {
 
 // Initialize I2C and SSD1306 display
 void init_display(void) {
+    // Display initialization commented out for now
+    ESP_LOGI(TAG, "Display initialization skipped");
+    return;
+    
+    /*
     ESP_LOGI(TAG, "Initializing SSD1306 display...");
     
     // Initialize I2C bus
@@ -159,12 +168,25 @@ void init_display(void) {
     memset(display_buffer, 0x00, LCD_H_RES * LCD_V_RES / 8);
     
     ESP_LOGI(TAG, "Display initialized");
+    */
 }
 
 // Draw text on display at specified position
 void display_draw_text(const char *text, int x, int y, bool large) {
     // For now, just log the text. In a real implementation, you'd use a graphics library
     ESP_LOGI(TAG, "Display text at (%d,%d): %s", x, y, text);
+    
+    // Draw a simple pattern to show something is happening
+    // This creates a line of pixels for each character
+    int len = strlen(text);
+    for (int i = 0; i < len && (x + i * 6) < LCD_H_RES; i++) {
+        for (int j = 0; j < (large ? 8 : 6); j++) {
+            if (y + j < LCD_V_RES) {
+                display_set_pixel(x + i * 6, y + j, true);
+                display_set_pixel(x + i * 6 + 4, y + j, true);
+            }
+        }
+    }
 }
 
 // Update display with current content
@@ -183,26 +205,66 @@ void shutter_monitor_task(void *pvParameters) {
     int64_t last_transition = 0;
     bool light_detected = false;
     measurement_t measurement;
+    int64_t last_log_time = 0;
+    
+    // Log ADC configuration
+    ESP_LOGI(TAG, "ADC Configuration: Channel %d, GPIO %d, Attenuation %d", 
+             ADC_CHANNEL, ADC_GPIO_PIN, ADC_ATTEN);
+    
+    // Counter for periodic yielding
+    int loop_counter = 0;
     
     while (1) {
+        // Single fast ADC read - no averaging for maximum speed
         ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_CHANNEL, &adc_reading));
         
         int64_t current_time = esp_timer_get_time();
         
+        // Only yield every 1000 iterations to prevent watchdog but maintain speed
+        if (++loop_counter >= 1000) {
+            vTaskDelay(1);  // Yield to prevent watchdog
+            loop_counter = 0;
+        }
+        
         // Debounce check
         if ((current_time - last_transition) < DEBOUNCE_US) {
-            vTaskDelay(pdMS_TO_TICKS(1));
             continue;
+        }
+        
+        // Log ADC value every 2 seconds regardless of state
+        if ((current_time - last_log_time) > 2000000) { // Every 2 seconds
+            float voltage = (adc_reading / 4095.0) * 3.3;
+            const char* state_name = "UNKNOWN";
+            
+            switch (current_state) {
+                case STATE_IDLE: state_name = "IDLE"; break;
+                case STATE_WAITING_OPEN: state_name = "WAITING"; break;
+                case STATE_TIMING: 
+                    state_name = "SHUTTER OPEN";
+                    int64_t elapsed_us = current_time - shutter_open_time;
+                    ESP_LOGI(TAG, "%s - ADC: %d (%.2fV), Time open: %.1f ms", 
+                            state_name, adc_reading, voltage, elapsed_us / 1000.0);
+                    last_log_time = current_time;
+                    break;
+                case STATE_COMPLETE: state_name = "COMPLETE"; break;
+            }
+            
+            if (current_state != STATE_TIMING) {
+                ESP_LOGI(TAG, "%s - ADC: %d (%.2fV)", state_name, adc_reading, voltage);
+                last_log_time = current_time;
+            }
         }
         
         switch (current_state) {
             case STATE_IDLE:
                 ESP_LOGI(TAG, "Ready. ADC: %d (waiting for shutter)", adc_reading);
                 current_state = STATE_WAITING_OPEN;
+                // No countdown delay needed without display
                 break;
                 
             case STATE_WAITING_OPEN:
-                if (adc_reading > LIGHT_THRESHOLD_HIGH && !light_detected) {
+                // Note: Logic inverted for photoresistor - lower ADC = more light (shutter open)
+                if (adc_reading < LIGHT_THRESHOLD_LOW && !light_detected) {
                     shutter_open_time = current_time;
                     light_detected = true;
                     current_state = STATE_TIMING;
@@ -213,7 +275,8 @@ void shutter_monitor_task(void *pvParameters) {
                 break;
                 
             case STATE_TIMING:
-                if (adc_reading < LIGHT_THRESHOLD_LOW && light_detected) {
+                // Note: Logic inverted for photoresistor - higher ADC = less light (shutter closing)
+                if (adc_reading > LIGHT_THRESHOLD_HIGH && light_detected) {
                     shutter_close_time = current_time;
                     light_detected = false;
                     current_state = STATE_COMPLETE;
@@ -226,6 +289,12 @@ void shutter_monitor_task(void *pvParameters) {
                     measurement.duration_ms = measurement.duration_us / 1000.0f;
                     calculate_shutter_speed(measurement.duration_us, measurement.shutter_speed);
                     
+                    // Print the shutter speed immediately
+                    ESP_LOGI(TAG, "=================================");
+                    ESP_LOGI(TAG, "SHUTTER SPEED: %s", measurement.shutter_speed);
+                    ESP_LOGI(TAG, "Duration: %.3f ms", measurement.duration_ms);
+                    ESP_LOGI(TAG, "=================================");
+                    
                     xQueueSend(measurement_queue, &measurement, 0);
                 }
                 break;
@@ -236,8 +305,6 @@ void shutter_monitor_task(void *pvParameters) {
                 current_state = STATE_IDLE;
                 break;
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(1));  // 1ms sampling rate
     }
 }
 
@@ -266,20 +333,51 @@ void display_draw_box(int x, int y, int w, int h) {
     }
 }
 
-// Task to display results
+// Draw a filled rectangle
+void display_fill_rect(int x, int y, int w, int h, bool color) {
+    for (int i = x; i < x + w && i < LCD_H_RES; i++) {
+        for (int j = y; j < y + h && j < LCD_V_RES; j++) {
+            display_set_pixel(i, j, color);
+        }
+    }
+}
+
+// Task to display results - commented out for now
+/*
 void display_task(void *pvParameters) {
     measurement_t measurement;
-    char line1[32], line2[32], line3[32];
+    char line1[64];
+    char last_speed[32] = "None";
     
-    // Show initial screen
+    // Show welcome screen with countdown
+    for (int i = 3; i > 0; i--) {
+        display_clear();
+        display_draw_box(0, 0, LCD_H_RES, LCD_V_RES);
+        display_draw_text("SHUTTER CHECKER", 10, 10, true);
+        snprintf(line1, sizeof(line1), "Starting in %d...", i);
+        display_draw_text(line1, 20, 30, false);
+        
+        // Draw countdown progress bar
+        int bar_width = (3 - i + 1) * (LCD_H_RES - 20) / 3;
+        display_fill_rect(10, 50, bar_width, 10, true);
+        display_draw_box(10, 50, LCD_H_RES - 20, 10);
+        
+        display_update();
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    
+    // Show ready screen
     display_clear();
     display_draw_box(0, 0, LCD_H_RES, LCD_V_RES);
-    display_draw_text("SHUTTER CHECKER", 20, 20, true);
-    display_draw_text("Ready...", 40, 40, false);
+    display_draw_text("Last Measurement:", 5, 10, false);
+    display_draw_text(last_speed, 30, 25, true);
+    display_draw_text("Ready for next", 15, 40, false);
+    display_draw_text("measurement", 20, 50, false);
     display_update();
     
     while (1) {
-        if (xQueueReceive(measurement_queue, &measurement, portMAX_DELAY)) {
+        // Check for new measurements with timeout
+        if (xQueueReceive(measurement_queue, &measurement, pdMS_TO_TICKS(100))) {
             ESP_LOGI(TAG, "=================================");
             ESP_LOGI(TAG, "MEASUREMENT COMPLETE!");
             ESP_LOGI(TAG, "Duration: %lld microseconds", measurement.duration_us);
@@ -287,24 +385,32 @@ void display_task(void *pvParameters) {
             ESP_LOGI(TAG, "Shutter Speed: %s", measurement.shutter_speed);
             ESP_LOGI(TAG, "=================================");
             
-            // Update LCD display
+            // Store the measurement
+            strncpy(last_speed, measurement.shutter_speed, sizeof(last_speed) - 1);
+            
+            // Show measurement for 3 seconds
             display_clear();
             display_draw_box(0, 0, LCD_H_RES, LCD_V_RES);
+            display_draw_text("MEASURED!", 30, 10, true);
+            display_draw_text(measurement.shutter_speed, 25, 30, true);
+            snprintf(line1, sizeof(line1), "%.1f ms", measurement.duration_ms);
+            display_draw_text(line1, 30, 45, false);
+            display_update();
             
-            // Format display lines
-            snprintf(line1, sizeof(line1), "Speed: %s", measurement.shutter_speed);
-            snprintf(line2, sizeof(line2), "%.1f ms", measurement.duration_ms);
-            snprintf(line3, sizeof(line3), "%lld us", measurement.duration_us);
+            vTaskDelay(pdMS_TO_TICKS(3000));
             
-            // Draw on display (positions are approximate - would need proper font rendering)
-            display_draw_text(line1, 10, 10, true);
-            display_draw_text(line2, 10, 30, false);
-            display_draw_text(line3, 10, 45, false);
-            
+            // Return to ready screen
+            display_clear();
+            display_draw_box(0, 0, LCD_H_RES, LCD_V_RES);
+            display_draw_text("Last Measurement:", 5, 10, false);
+            display_draw_text(last_speed, 30, 25, true);
+            display_draw_text("Ready for next", 15, 40, false);
+            display_draw_text("measurement", 20, 50, false);
             display_update();
         }
     }
 }
+*/
 
 void app_main(void)
 {
@@ -318,11 +424,12 @@ void app_main(void)
     // Create queue for measurements
     measurement_queue = xQueueCreate(10, sizeof(measurement_t));
     
-    // Create monitoring task
-    xTaskCreate(shutter_monitor_task, "shutter_monitor", 4096, NULL, 5, NULL);
+    // Create monitoring task with high priority for fast response
+    xTaskCreatePinnedToCore(shutter_monitor_task, "shutter_monitor", 8192, NULL, 
+                            configMAX_PRIORITIES - 1, NULL, 1);  // Pin to core 1, max priority
     
-    // Create display task
-    xTaskCreate(display_task, "display", 4096, NULL, 4, NULL);
+    // Create display task - commented out for now
+    // xTaskCreate(display_task, "display", 4096, NULL, 4, NULL);
     
     ESP_LOGI(TAG, "System initialized. Place camera in front of light source.");
 }

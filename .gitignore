@@ -1,0 +1,61 @@
+# ESP-IDF build artifacts
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.ci
+sdkconfig.defaults.*
+
+# Python
+*.py[cod]
+__pycache__/
+.Python
+venv/
+env/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
+# ESP-IDF specific
+.espressif/
+dependencies.lock
+managed_components/
+
+# Flash download tool
+flash_download_tool*/
+
+# Unit test / coverage reports
+test_results/
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# Documentation build
+docs/_build/
+docs/doxygen_sqlite3.db
+
+# Partition table
+partition_table*.bin
+
+# Firmware binaries
+*.bin
+*.elf
+*.map
+
+# Core dumps
+core

@@ -39,19 +39,19 @@
    - Consider using hardware timer for accurate measurements
 
 6. **Hardware Pins for ESP32-S3 Feather**:
-   - **Photoresistor ADC**: GPIO5 (A1 pin) - ADC1 Channel 4
+   - **Photoresistor ADC**: GPIO8 (A5 pin) - ADC1 Channel 7
    - **Light Source LED**: GPIO12 (D12 pin)
    - **Status LED**: GPIO13 (Built-in LED)
-   - **Future LCD Display**:
-     - I2C: SDA=GPIO3, SCL=GPIO4 (STEMMA QT connector)
-     - Or SPI: MOSI=GPIO35, MISO=GPIO37, SCK=GPIO36
+   - **OLED Display (I2C)**:
+     - SDA: GPIO3
+     - SCL: GPIO4
 
 7. **Wiring Guide**:
    ```
    Photoresistor Circuit:
-   3.3V --- [10kΩ resistor] --- GPIO5 --- [Photoresistor] --- GND
-                                 |
-                            ADC input
+   3.3V --- [10kΩ resistor] --- GPIO8 (A5) --- [Photoresistor] --- GND
+                                    |
+                               ADC input
    
    Light Source LED:
    GPIO12 --- [220Ω resistor] --- LED --- GND
@@ -59,7 +59,7 @@
 
 8. **ADC Configuration**:
    - Using ADC1 (ADC2 conflicts with WiFi on ESP32)
-   - 11dB attenuation for 0-3.3V range
+   - 12dB attenuation for 0-3.3V range (ADC_ATTEN_DB_12)
    - 12-bit resolution (0-4095 values)
    - Light threshold: >2500 = light detected, <1000 = dark
 
